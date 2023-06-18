@@ -2,34 +2,41 @@ package main
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/adrianosela/multicast"
 )
+
+const defaultListenerCapacity = 10
 
 func main() {
 	m := multicast.New[string]()
 	defer m.Close()
 
-	for job := 0; job < 5; job++ {
-		go func(jobID int) {
-			l := m.NewListener()
-			for data := range l.C() {
-				fmt.Println(fmt.Sprintf("[job %d] got %s", jobID, data))
+	for i := 0; i < 10; i++ {
+		l, cancel := m.NewListener(defaultListenerCapacity)
+		defer cancel()
+
+		go func(jobID int, listener *multicast.Listener[string]) {
+			fmt.Println(fmt.Sprintf("[L] [job %d] starting...", jobID))
+
+			for data := range listener.C() {
+				fmt.Println(fmt.Sprintf("[L] [job %d] got %s", jobID, data))
 			}
-		}(job)
+
+			fmt.Println(fmt.Sprintf("[L] [job %d] ...done", jobID))
+		}(i, l)
 	}
 
-	time.Sleep(time.Second * 1)
+	for writer := 0; writer < 1; writer++ {
+		w, cancel := m.NewWriter()
+		defer cancel()
 
-	for writer := 0; writer < 5; writer++ {
-		w := m.NewWriter()
-		defer w.Close()
-
-		for message := 0; message < 5; message++ {
-			w.Write(fmt.Sprintf("[writer %d] message %d", writer, message))
+		for message := 0; message < 1; message++ {
+			err := w.Write(fmt.Sprintf("[writer %d] message %d", writer, message))
+			if err != nil {
+				fmt.Println(err)
+				break
+			}
 		}
 	}
-
-	time.Sleep(time.Second * 1)
 }

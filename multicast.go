@@ -1,6 +1,9 @@
 package multicast
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 const (
 	defaultOutboundQueueBufferSize = 1000
@@ -9,11 +12,17 @@ const (
 // Multicast represents an object capable of broadcasting
 // messages from multiple writers to multiple listeners.
 type Multicast[T any] struct {
-	// lock for listeners list
-	mutex sync.Mutex
+	// lock for writers list.
+	mutexW sync.RWMutex
+
+	// lock for listeners list.
+	mutexL sync.RWMutex
+
+	// list of all the current message writers.
+	writers []*Writer[T]
 
 	// list of all the current message listeners.
-	listeners []chan<- T
+	listeners []*Listener[T]
 
 	// used as a FIFO queue for outbound messages
 	// to be forwarded to all the listeners.
@@ -24,13 +33,17 @@ type Multicast[T any] struct {
 	outboundQueueDrained chan struct{}
 }
 
+// CloseFunc represents a function to close
+// a multicast Listener or multicast Writer.
+type CloseFunc func()
+
 // New returns a newly initialized Multicast of the specified type.
 func New[T any]() *Multicast[T] {
 	m := &Multicast[T]{
-		// note: mutex requires no initialization
-		listeners:            []chan<- T{},
+		// note: mutex lock doesn't need initialization
+		listeners:            []*Listener[T]{},
 		outboundQueue:        make(chan T, defaultOutboundQueueBufferSize),
-		outboundQueueDrained: make(chan struct{}, 0),
+		outboundQueueDrained: make(chan struct{}),
 	}
 	go m.run()
 	return m
@@ -39,24 +52,43 @@ func New[T any]() *Multicast[T] {
 // Close closes the multicast and blocks until all
 // messages currently in the outbound queue are sent.
 func (m *Multicast[T]) Close() {
+	m.mutexW.Lock()
+	defer m.mutexW.Unlock()
+
+	// close all writers
+	for _, writer := range m.writers {
+		writer.close()
+	}
+
+	// close outbound queue
 	close(m.outboundQueue)
+
+	// block until outbound queue is drained
 	<-m.outboundQueueDrained
-	close(m.outboundQueueDrained)
 }
 
 // NewWriter returns a new message Writer for the multicast.
-func (m *Multicast[T]) NewWriter() *Writer[T] {
-	return newWriter[T](m.outboundQueue)
+func (m *Multicast[T]) NewWriter() (*Writer[T], CloseFunc) {
+	m.mutexW.Lock()
+	defer m.mutexW.Unlock()
+
+	writer := newWriter[T](m.outboundQueue)
+
+	m.writers = append(m.writers, writer)
+
+	return writer, m.closeWriterFn(writer)
 }
 
 // NewListener returns a new message Listener for the multicast.
-func (m *Multicast[T]) NewListener() *Listener[T] {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
+func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], CloseFunc) {
+	m.mutexL.Lock()
+	defer m.mutexL.Unlock()
 
-	l := newListener[T]()
-	m.listeners = append(m.listeners, l.c)
-	return l
+	listener := newListener[T](capacity)
+
+	m.listeners = append(m.listeners, listener)
+
+	return listener, m.closeListenerFn(listener)
 }
 
 // run processes messages in the outbound queue
@@ -70,14 +102,48 @@ func (m *Multicast[T]) run() {
 	}
 	// signal that the outbound queue channel is drained
 	m.outboundQueueDrained <- struct{}{}
+	close(m.outboundQueueDrained)
 }
 
 // broadcast broadcasts a message to all listeners of the multicast.
 func (m *Multicast[T]) broadcast(message T) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
+	m.mutexL.RLock()
+	defer m.mutexL.RUnlock()
 
 	for _, listener := range m.listeners {
-		go func(l chan<- T) { l <- message }(listener)
+		listener.c <- message
 	}
+}
+
+// closeListenerFn returns a function to handle
+// the safe closure of a listener in a multicast.
+func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) func() {
+	return func() {
+		// 1 ms sleep to allow any go routines
+		// using the listener to be dispatched
+		// before closure.
+		time.Sleep(time.Millisecond)
+
+		m.mutexL.Lock()
+		defer m.mutexL.Unlock()
+
+		for i, l := range m.listeners {
+			if listener.c == l.c {
+				// remove listener from list of listeners
+				copy(m.listeners[i:], m.listeners[i+1:])
+				m.listeners[len(m.listeners)-1] = nil
+				m.listeners = m.listeners[:len(m.listeners)-1]
+
+				// close the listener
+				listener.close()
+				break
+			}
+		}
+	}
+}
+
+// closeWriterFn returns a function to handle
+// the safe closure of a writer in a multicast.
+func (m *Multicast[T]) closeWriterFn(writer *Writer[T]) func() {
+	return func() { writer.close() }
 }

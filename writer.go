@@ -1,23 +1,47 @@
 package multicast
 
+import (
+	"errors"
+	"sync"
+)
+
+// Writer represents a multicast writer.
 type Writer[T any] struct {
-	c chan T
+	// lock for closed variable.
+	mutexC sync.RWMutex
+
+	// true when the Writer is closed.
+	closed bool
+
+	// write-only channel where each written
+	// message is sent to each listener.
+	c chan<- T
 }
 
-func newWriter[T any](target chan<- T) *Writer[T] {
-	w := &Writer[T]{c: make(chan T)}
-	go func() {
-		for message := range w.c {
-			target <- message
-		}
-	}()
-	return w
+// newWriter returns a new Writer with a given channel.
+func newWriter[T any](c chan<- T) *Writer[T] {
+	return &Writer[T]{closed: false, c: c}
 }
 
-func (w Writer[T]) Close() {
-	close(w.c)
+// close soft-closes the Writer (marks it as closed). Note that
+// the channel is not closed (as it is owned by the Multicast).
+func (w *Writer[T]) close() {
+	w.mutexC.Lock()
+	defer w.mutexC.Unlock()
+
+	w.closed = true
 }
 
-func (w Writer[T]) Write(message T) {
+// Write writes a message to the Writer.
+func (w *Writer[T]) Write(message T) error {
+	w.mutexC.RLock()
+	defer w.mutexC.RUnlock()
+
+	if w.closed {
+		return errors.New("multicast channel is closed")
+	}
+
 	w.c <- message
+
+	return nil
 }
