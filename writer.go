@@ -18,6 +18,9 @@ type Writer[T any] struct {
 	c chan<- T
 }
 
+// ErrWriterClosed is returned when Write() is invoked on a closed Writer.
+var ErrWriterClosed = errors.New("writer is closed")
+
 // newWriter returns a new Writer with a given channel.
 func newWriter[T any](c chan<- T) *Writer[T] {
 	return &Writer[T]{closed: false, c: c}
@@ -38,7 +41,7 @@ func (w *Writer[T]) Write(message T) error {
 	defer w.mutexC.RUnlock()
 
 	if w.closed {
-		return errors.New("multicast channel is closed")
+		return ErrWriterClosed
 	}
 
 	w.c <- message

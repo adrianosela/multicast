@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	defaultOutboundQueueBufferSize = 1000
+	defaultOutboundQueueSize = 1000
 )
 
 // Multicast represents an object capable of broadcasting
@@ -33,25 +33,57 @@ type Multicast[T any] struct {
 	outboundQueueDrained chan struct{}
 }
 
-// CloseFunc represents a function to close
-// a multicast Listener or multicast Writer.
+// CloseFunc represents a function to close a multicast Writer.
 type CloseFunc func()
 
+// WaitFunc represents a function to wait for a
+// multicast Listener to process its inbound queue.
+type WaitFunc func(time.Duration)
+
+// config represents configuration for a new Multicast.
+type config struct {
+	outboundQueueSize int
+}
+
+// Option represents a Multicast configuration option.
+type Option func(*config)
+
+// WithOutboundQueueSize is a Multicast configuration
+// option to set a non default value for the outbound
+// queue (channel) buffer size.
+func WithOutboundQueueSize(size int) Option {
+	return func(c *config) {
+		c.outboundQueueSize = size
+	}
+}
+
 // New returns a newly initialized Multicast of the specified type.
-func New[T any]() *Multicast[T] {
+func New[T any](opts ...Option) *Multicast[T] {
+	c := &config{
+		outboundQueueSize: defaultOutboundQueueSize,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
 	m := &Multicast[T]{
 		// note: mutex lock doesn't need initialization
 		listeners:            []*Listener[T]{},
-		outboundQueue:        make(chan T, defaultOutboundQueueBufferSize),
+		outboundQueue:        make(chan T, c.outboundQueueSize),
 		outboundQueueDrained: make(chan struct{}),
 	}
 	go m.run()
 	return m
 }
 
-// Close closes the multicast and blocks until all
-// messages currently in the outbound queue are sent.
+// Close closes the Multicast.
 func (m *Multicast[T]) Close() {
+	m.closeAllWriters()
+	// TODO: consider waiting for all listeners to drain (or timeout)
+}
+
+// closeAllWriters closes the multicast and blocks until
+// all messages currently in the outbound queue are sent.
+func (m *Multicast[T]) closeAllWriters() {
 	m.mutexW.Lock()
 	defer m.mutexW.Unlock()
 
@@ -80,7 +112,7 @@ func (m *Multicast[T]) NewWriter() (*Writer[T], CloseFunc) {
 }
 
 // NewListener returns a new message Listener for the multicast.
-func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], CloseFunc) {
+func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], WaitFunc) {
 	m.mutexL.Lock()
 	defer m.mutexL.Unlock()
 
@@ -111,46 +143,38 @@ func (m *Multicast[T]) broadcast(message T) {
 	defer m.mutexL.RUnlock()
 
 	for _, listener := range m.listeners {
-		listener.c <- message
+		go func(l *Listener[T]) { l.c <- message }(listener)
 	}
 }
 
 // closeListenerFn returns a function to handle
 // the safe closure of a listener in a multicast.
-func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) func() {
-	return func() {
-		m.beforeClosingListener()
+func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) WaitFunc {
+	return func(timeout time.Duration) {
+		// remove the listener from the list of listeners
+		m.removeListener(listener)
 
-		m.mutexL.Lock()
-		defer m.mutexL.Unlock()
+		// close the listener's inbound message channel
+		listener.close()
 
-		for i, l := range m.listeners {
-			if listener.c == l.c {
-				// remove listener from list of listeners
-				copy(m.listeners[i:], m.listeners[i+1:])
-				m.listeners[len(m.listeners)-1] = nil
-				m.listeners = m.listeners[:len(m.listeners)-1]
-
-				// close the listener
-				listener.close()
-				break
-			}
-		}
+		// wait for the listener's inbound channel to drain
+		listener.wait(timeout)
 	}
 }
 
-// beforeClosingListener sleeps for a time proportional to the ammount
-// of listeners in the multicast. The number of listeners are used as a
-// proxy for how busy the CPU is... e.g. more listeners means more time
-// for the scheduler to dispatch the reader go routine of any listener.
-// We do this because even though all messages have already been read by
-// the listener's reader at this point, the processing of the very last
-// message may still be in progress...
-func (m *Multicast[T]) beforeClosingListener() {
+// removeListener removes a listener from the Multicast's list of listeners.
+func (m *Multicast[T]) removeListener(listener *Listener[T]) {
 	m.mutexL.Lock()
-	nListeners := len(m.listeners)
-	m.mutexL.Unlock()
-	time.Sleep(time.Millisecond * time.Duration(nListeners))
+	defer m.mutexL.Unlock()
+
+	for i, l := range m.listeners {
+		if listener.c == l.c {
+			copy(m.listeners[i:], m.listeners[i+1:])
+			m.listeners[len(m.listeners)-1] = nil
+			m.listeners = m.listeners[:len(m.listeners)-1]
+			break
+		}
+	}
 }
 
 // closeWriterFn returns a function to handle

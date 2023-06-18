@@ -2,13 +2,14 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/adrianosela/multicast"
 )
 
 const (
 	listenerCapacity  = 0
-	listeners         = 100
+	listeners         = 10
 	writers           = 10
 	messagesPerWriter = 10
 )
@@ -18,30 +19,42 @@ func main() {
 	defer m.Close()
 
 	for i := 0; i < listeners; i++ {
-		l, cancel := m.NewListener(listenerCapacity)
-		defer cancel()
+		l, drain := m.NewListener(listenerCapacity)
+		defer drain(time.Second * 5)
 
-		go func(jobID int, listener *multicast.Listener[string]) {
-			fmt.Println(fmt.Sprintf("[L] [job %d] starting...", jobID))
-
-			for data := range listener.C() {
-				fmt.Println(fmt.Sprintf("[L] [job %d] got %s", jobID, data))
-			}
-
-			fmt.Println(fmt.Sprintf("[L] [job %d] ...done", jobID))
-		}(i, l)
+		go runListener(i, l)
 	}
 
-	for writer := 0; writer < writers; writer++ {
-		w, cancel := m.NewWriter()
-		defer cancel()
+	// allow listener routines to come up
+	time.Sleep(time.Millisecond * 10)
 
-		for message := 0; message < messagesPerWriter; message++ {
-			err := w.Write(fmt.Sprintf("[writer %d] message %d", writer, message))
-			if err != nil {
-				fmt.Println(err)
-				break
-			}
+	for i := 0; i < writers; i++ {
+		w, close := m.NewWriter()
+		defer close()
+
+		go runWriter(i, w)
+	}
+
+	// allow writer routines to come up
+	time.Sleep(time.Millisecond * 10)
+}
+
+func runListener(jobID int, listener *multicast.Listener[string]) {
+	defer listener.Done()
+
+	fmt.Println(fmt.Sprintf("[L] [listener %d] starting...", jobID))
+	for data := range listener.C() {
+		fmt.Println(fmt.Sprintf("[L] [listener %d] got %s", jobID, data))
+	}
+	fmt.Println(fmt.Sprintf("[L] [listener %d] ...done", jobID))
+}
+
+func runWriter(jobID int, writer *multicast.Writer[string]) {
+	for i := 0; i < messagesPerWriter; i++ {
+		err := writer.Write(fmt.Sprintf("{ \"from\":\"writer %d\", \"body\": \"%d\" }", jobID, i))
+		if err != nil {
+			fmt.Println(fmt.Sprintf("[W] [writer %d] ERROR - failed to write: %v", jobID, err))
+			break
 		}
 	}
 }
