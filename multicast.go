@@ -119,10 +119,7 @@ func (m *Multicast[T]) broadcast(message T) {
 // the safe closure of a listener in a multicast.
 func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) func() {
 	return func() {
-		// 1 ms sleep to allow any go routines
-		// using the listener to be dispatched
-		// before closure.
-		time.Sleep(time.Millisecond)
+		m.beforeClosingListener()
 
 		m.mutexL.Lock()
 		defer m.mutexL.Unlock()
@@ -140,6 +137,20 @@ func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) func() {
 			}
 		}
 	}
+}
+
+// beforeClosingListener sleeps for a time proportional to the ammount
+// of listeners in the multicast. The number of listeners are used as a
+// proxy for how busy the CPU is... e.g. more listeners means more time
+// for the scheduler to dispatch the reader go routine of any listener.
+// We do this because even though all messages have already been read by
+// the listener's reader at this point, the processing of the very last
+// message may still be in progress...
+func (m *Multicast[T]) beforeClosingListener() {
+	m.mutexL.Lock()
+	nListeners := len(m.listeners)
+	m.mutexL.Unlock()
+	time.Sleep(time.Millisecond * time.Duration(nListeners))
 }
 
 // closeWriterFn returns a function to handle
