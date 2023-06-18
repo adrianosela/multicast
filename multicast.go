@@ -36,9 +36,9 @@ type Multicast[T any] struct {
 // CloseFunc represents a function to close a multicast Writer.
 type CloseFunc func()
 
-// WaitFunc represents a function to wait for a
+// DrainFunc represents a function to wait for a
 // multicast Listener to process its inbound queue.
-type WaitFunc func(time.Duration)
+type DrainFunc func(time.Duration)
 
 // config represents configuration for a new Multicast.
 type config struct {
@@ -112,7 +112,7 @@ func (m *Multicast[T]) NewWriter() (*Writer[T], CloseFunc) {
 }
 
 // NewListener returns a new message Listener for the multicast.
-func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], WaitFunc) {
+func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], DrainFunc) {
 	m.mutexL.Lock()
 	defer m.mutexL.Unlock()
 
@@ -149,7 +149,7 @@ func (m *Multicast[T]) broadcast(message T) {
 
 // closeListenerFn returns a function to handle
 // the safe closure of a listener in a multicast.
-func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) WaitFunc {
+func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) DrainFunc {
 	return func(timeout time.Duration) {
 		// remove the listener from the list of listeners
 		m.removeListener(listener)
