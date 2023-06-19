@@ -21,8 +21,8 @@ defer m.Close()
 #### Adding a Listener
 
 ```
-listener, drain := m.NewListener(listenerCapacity)
-defer drain(time.Second * 5)
+listener, close := m.NewListener(listenerCapacity)
+defer close(time.Second * 5)
 
 go func() {
 	defer listener.Done()
