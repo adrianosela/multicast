@@ -19,8 +19,8 @@ func main() {
 	defer m.Close()
 
 	for i := 0; i < listeners; i++ {
-		l, drain := m.NewListener(listenerCapacity)
-		defer drain(time.Second * 5)
+		l, close := m.NewListener(listenerCapacity)
+		defer close(time.Second * 5)
 
 		go runListener(i, l)
 	}

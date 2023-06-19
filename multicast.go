@@ -34,12 +34,12 @@ type Multicast[T any] struct {
 	outboundQueueDrained chan struct{}
 }
 
-// CloseFunc represents a function to close a multicast Writer.
-type CloseFunc func()
+// WriterCloseFunc represents a function to close a multicast Writer.
+type WriterCloseFunc func()
 
-// DrainFunc represents a function to wait for a
-// multicast Listener to process its inbound queue.
-type DrainFunc func(time.Duration)
+// ListenerCloseFunc represents a function to close a multicast Listener
+// and wait for its reader process to empty its inbound queue OR time out.
+type ListenerCloseFunc func(time.Duration)
 
 // config represents configuration for a new Multicast.
 type config struct {
@@ -101,7 +101,7 @@ func (m *Multicast[T]) closeAllWriters() {
 }
 
 // NewWriter returns a new message Writer for the multicast.
-func (m *Multicast[T]) NewWriter() (*Writer[T], CloseFunc) {
+func (m *Multicast[T]) NewWriter() (*Writer[T], WriterCloseFunc) {
 	m.mutexW.Lock()
 	defer m.mutexW.Unlock()
 
@@ -113,7 +113,7 @@ func (m *Multicast[T]) NewWriter() (*Writer[T], CloseFunc) {
 }
 
 // NewListener returns a new message Listener for the multicast.
-func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], DrainFunc) {
+func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], ListenerCloseFunc) {
 	m.mutexL.Lock()
 	defer m.mutexL.Unlock()
 
@@ -121,7 +121,7 @@ func (m *Multicast[T]) NewListener(capacity int) (*Listener[T], DrainFunc) {
 
 	m.listeners = append(m.listeners, listener)
 
-	return listener, m.closeListenerFn(listener)
+	return listener, m.getListenerCloseFunc(listener)
 }
 
 // run processes messages in the outbound queue
@@ -183,9 +183,9 @@ func (m *Multicast[T]) broadcast(message T) {
 	}
 }
 
-// closeListenerFn returns a function to handle
+// getListenerCloseFunc returns a function to handle
 // the safe closure of a listener in a multicast.
-func (m *Multicast[T]) closeListenerFn(listener *Listener[T]) DrainFunc {
+func (m *Multicast[T]) getListenerCloseFunc(listener *Listener[T]) ListenerCloseFunc {
 	return func(timeout time.Duration) {
 		// remove the listener from the list of listeners
 		m.removeListener(listener)
