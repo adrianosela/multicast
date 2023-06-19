@@ -1,6 +1,7 @@
 package multicast
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -143,7 +144,42 @@ func (m *Multicast[T]) broadcast(message T) {
 	defer m.mutexL.RUnlock()
 
 	for _, listener := range m.listeners {
-		go func(l *Listener[T]) { l.c <- message }(listener)
+		go func(l *Listener[T]) {
+
+			defer func() {
+				if err := recover(); err != nil {
+					// If this happens, the listener was closed ungracefully.
+					//
+					// This happens in a very specific sequence of events:
+					// - (1) The listener's queue is completely full
+					// - (2) The listener receives more messages (meaning
+					//       that there will be a build up of go routines
+					//       of this function waiting for queue space in
+					//       order to write their message and exit)
+					// - (3) The listener's drain function was called (which
+					//       removes the listener from the Multicast and no
+					//       new messages are enqueued for the listener) AND
+					//       the Done() function for the listener was called
+					//       without draining the channel (or never called)
+					// - (4) The listener's channel was closed with go routines
+					//       of this function still trying to write to the
+					//       listener's channel -- all of those go routines
+					//       will cause a panic (recovered here)
+					//
+					// There will be one panic for each undelivered message.
+					//
+					fmt.Println(fmt.Sprintf("Listener was closed ungracefully: %v", err))
+				}
+			}()
+
+			l.c <- message
+
+			// TODO: implement different strategies to handle a listener being at
+			// capacity, selectable via some configuration setting. For example,
+			// could choose to drop messages instead of having go routines in-flight.
+			// This strategy would eliminate the possibility of the panics described above.
+
+		}(listener)
 	}
 }
 
